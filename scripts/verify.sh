@@ -23,9 +23,9 @@ TURN_ID="$(curl -sS -X POST http://localhost:8080/turns \
       {"role":"user","content":"I just moved to Berlin from NYC last month. My dog named Biscuit is loving the parks."},
       {"role":"assistant","content":"Nice update!"}
     ],
-    "timestamp":"2025-03-15T10:30:00Z",
+    "timestamp":"2026-03-15T10:30:00Z",
     "metadata":{}
-  }' | python -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+  }' | docker compose -f docker-compose.yml exec -T memory-service python -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
 echo "turn id: $TURN_ID"
 
 echo "[4/6] Running recall probe"
@@ -44,6 +44,6 @@ curl -sS http://localhost:8080/users/user-1/memories
 echo
 
 echo "[6/6] Running internal tests in container"
-docker compose -f docker-compose.yml exec memory-service python -m pytest -q
+docker compose -f docker-compose.yml exec memory-service python -m pytest -q tests/
 
 echo "Verification complete."

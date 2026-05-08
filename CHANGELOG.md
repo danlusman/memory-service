@@ -1,121 +1,91 @@
-_Format used for each iteration: **What changed**, **Why**, **Result (observed behavior/test outcome)**, **Next**._
+# Design Log
 
-## v1 - Contract-first skeleton
+This changelog tracks only significant design iterations.  
+Each entry records what was attempted, what was observed, and why direction changed.
 
-**What changed:** Implemented FastAPI service with all required endpoints and SQLite persistence model for turns + memories.
-
-**Why:** Needed a strict baseline that passed the evaluator's HTTP contract before optimizing retrieval quality.
-
-**Result:** Contract endpoints responded with correct status codes and shapes on manual smoke checks.
-
-**Next:** Add real extraction logic; avoid storing raw chunks as memories.
+Entries are newest first.
 
 ---
 
-## v2 - Structured extraction pass
+## v7 — Docker/runtime reproducibility and deterministic test DB isolation
 
-**What changed:** Added rule-based extraction for employment, location, pets, dietary preferences, allergies, and simple opinions/corrections.
+**Tried:** Running local edits with plain `docker compose up -d` and relying on fixture-level env changes without reloading `src.main`.
 
-**Why:** A message log alone is not memory. Needed typed, inspectable records for `/users/{user_id}/memories`.
+**Observed:** App code is image-baked (`COPY src`) and not bind-mounted, so `up -d` reused stale images after source changes. In tests, module-level `DB_PATH` could stay pinned across runs, causing confusing cross-test DB behavior.
 
-**Result:** Memory table became structured (`type/category/key/value/confidence/provenance`) and inspectable.
+**Direction change:** Standardized docs around `docker compose up -d --build` for edited code paths, added optional `docker compose watch`, and reloaded `src.main` in the pytest fixture after setting `MEMORY_DB_PATH`.
 
-**Next:** Improve contradiction handling so stale facts stop surfacing.
-
----
-
-## v3 - Fact evolution via supersession chain
-
-**What changed:** Added mutable-key upsert logic (`employment`, `location`, `diet`, etc.) with `active` flag and `supersedes` pointer.
-
-**Why:** Evaluations penalize append-only contradictions (e.g., Stripe vs Notion both active).
-
-**Result:** Newest fact is active and old value preserved as inactive history.
-
-**Next:** Retrieval quality still weak for keyword-heavy probes; add hybrid recall.
+**Result:** Reproducible local/dev flow and deterministic test isolation.
 
 ---
 
-## v4 - Hybrid retrieval and budgeted recall assembly
+## v6 — Implicit pet extraction and noise resistance hardening
 
-**What changed:** Added FTS5 ranking + lexical similarity fusion + recency tie-break, plus section-priority context assembly under token budget.
+**Tried:** A simple lowercase-only implicit pattern, then broad case-insensitive matching.
 
-**Why:** Pure nearest-neighbor style retrieval misses exact entity probes ("dog's name", "shellfish allergy").
+**Observed:** Natural phrasing like `Walking Biscuit...` intermittently failed in Docker runs, and broad patterns risked false positives (e.g., non-name tokens after verbs).
 
-**Result:** Query recall improved on internal fixture; stable facts now prioritized under tight token budgets.
+**Direction change:** Switched to scoped case-insensitive verb matching with proper-noun-first capture, then guarded lowercase fallback with a small stoplist; added dedicated unit + integration coverage.
 
-**Next:** Add fixture-driven regression tests and persistence restart checks.
-
----
-
-## v5 - Internal quality loop and hardening
-
-**What changed:** Added contract tests, malformed input tests, concurrent-session tests, restart persistence test, and fixture-based recall quality scoring.
-
-**Why:** Needed a repeatable internal eval loop and robustness checks to avoid regressions.
-
-**Result:** Service now ships with automated quality guardrails and restart safety verification.
-
-**Next:** Future iteration could add optional LLM extraction/reranking and opinion-arc summarization.
+**Result:** Reliable implicit pet extraction with better noise resistance.
 
 ---
 
-## v6 - Hard-problem alignment pass
+## v5 — Recall quality loop driven by scripted fixtures
 
-**What changed:** Extended extraction to include implicit pet facts ("walking Biscuit"), relationship/family facts, and topic-scoped opinion memories. Added mutable supersession for topic opinions (e.g., TypeScript stance changes). Tightened recall with query-relevance gating to reduce unrelated context spill.
+**Tried:** Manual curl checks and ad-hoc reasoning about recall quality.
 
-**Why:** The evaluation emphasizes extraction depth, contradiction handling beyond jobs/locations, and noise resistance. Earlier behavior handled facts well but opinion arcs and implicit cues were too shallow.
+**Observed:** Manual checks under-detected regressions, especially multi-hop and noise scenarios.
 
-**Result:** Internal tests now explicitly cover opinion supersession, implicit-fact extraction, and unrelated-query empty-context behavior in addition to prior contract/persistence checks.
+**Direction change:** Added fixture-driven quality tests (`fixtures/*.json` + `tests/test_fixtures_extended.py`) with threshold assertions, and tightened recall gating/context clipping.
 
-**Next:** Add optional LLM-assisted normalization for harder paraphrases and long-horizon opinion summarization while keeping deterministic fallback.
-
----
-
-## v7 - Post-smoke bugfix and documentation pass
-
-**What changed:** Fixed three issues found during live smoke runs: (1) duplicate active memories when the same mutable fact was ingested repeatedly, (2) overly greedy relocation extraction that produced malformed strings, and (3) repeated lines in recall context/citations. Added dedupe safeguards in storage and recall assembly plus a regression test for duplicate fact ingestion.
-
-**Why:** The service produced noisy `/recall` output (`Lives in Berlin` repeated) and malformed relocation values (`Moved from NYC ... to Berlin`) under realistic repeated-run conditions. These hurt recall readability and reviewer confidence even though endpoint shapes were valid.
-
-**Result:** Re-ingesting identical turns no longer creates duplicate active mutable facts, relocation memory text is normalized, and recall output is deduplicated. Test suite includes a new regression case and remains green.
-
-**Known operational note:** `no configuration file provided: not found` is a CLI invocation/cwd issue, not an API bug. Use `docker compose -f docker-compose.yml ...` (or run from repo root) to avoid this during local verification.
-
-**Next:** Add an end-to-end smoke script that runs compose, health wait, ingest, recall, and assertion checks in one command to reduce operator error.
+**Result:** Repeatable quality regression loop and stronger confidence in `/recall`.
 
 ---
 
-## v8 - Evaluator smoothness hardening
+## v4 — Hybrid retrieval instead of single-signal search
 
-**What changed:** Added a reproducible `scripts/verify.sh` smoke-and-test runner, expanded README with evaluator-compatible setup commands, and added a regression test to enforce normalized relocation extraction (`Moved from NYC to Berlin`).
+**Tried:** Keyword-dominant retrieval and simple lexical ranking.
 
-**Why:** Live runs surfaced operator friction (wrong cwd/compose file) and made it hard to quickly distinguish environment mistakes from service bugs. Also needed explicit guardrails to prevent relocation-format regressions.
+**Observed:** Exact-match paths missed paraphrased memory queries; semantic-only ranking risked spurious matches.
 
-**Result:** One-command verification path now exists for clean-machine checks, setup docs are unambiguous, and tests explicitly validate relocation normalization in addition to duplicate-memory safeguards.
+**Direction change:** Introduced fused ranking across FTS5, embedding cosine similarity, and lexical overlap; kept deterministic local embedding fallback with optional OpenAI embeddings.
 
-**Next:** Optionally add CI to run `scripts/verify.sh` on each push for deployment confidence.
-
----
-
-## v9 - Embedding-enhanced retrieval
-
-**What changed:** Added memory embeddings with hybrid retrieval fusion: FTS score + embedding cosine + lexical overlap. Added optional OpenAI embedding support (`OPENAI_API_KEY`) with deterministic local fallback embeddings when no key is provided. Persisted embeddings in storage with migration-safe schema upgrade.
-
-**Why:** To meet the "real recall ranking" bar and improve semantic recall beyond keyword overlap while preserving zero-setup Docker startup.
-
-**Result:** Retrieval now includes an explicit semantic signal and remains fully functional offline. System still boots with `docker compose up` and no manual key setup.
-
-**Next:** Add offline reranking over top candidates and benchmark recall/latency deltas per fixture query.
+**Result:** Better balance between precision and semantic recall without external hard dependency.
 
 ---
 
-## v10 - Contract and reliability polish
+## v3 — Fact evolution via supersession chains
 
-**What changed:** Tightened request validation bounds (`max_tokens`, `/search` limit, non-empty queries/messages), added explicit `/search` contract-shape and recall-bound tests, removed redundant session delete logic, and added a generic 500 handler for resilient error responses.
+**Tried:** Append-only memory records and overwrite-like behavior.
 
-**Why:** Final review criteria emphasize strict contract behavior and graceful degradation under malformed or unexpected traffic.
+**Observed:** Contradictions (e.g., employment/location changes) need both current truth for recall and historical traceability for inspection.
 
-**Result:** API now rejects out-of-bounds inputs with clear 422 responses, cleanup logic is simpler, and failure paths consistently return JSON errors without crashing the process.
+**Direction change:** Implemented mutable-key supersession (`active` + `supersedes`) so new facts deactivate prior active rows while preserving history.
 
-**Next:** Add CI execution for full contract + fixture suite on each change.
+**Result:** Recall favors current state; `/users/{user_id}/memories` still exposes full evolution.
+
+---
+
+## v2 — Structured extraction instead of raw message storage
+
+**Tried:** Persisting turns with minimal derivation.
+
+**Observed:** Raw logs alone are weak for targeted recall and do not satisfy memory-inspection expectations.
+
+**Direction change:** Added deterministic extraction pipeline for facts, preferences, opinions, corrections, and implicit cues into normalized memory rows.
+
+**Result:** Inspectable structured memory store and higher-quality retrieval inputs.
+
+---
+
+## v1 — Contract-first, single-container foundation
+
+**Tried:** Started from an empty repository and contract requirements.
+
+**Observed:** Needed strict synchronous correctness (`/turns` write-to-read), simple ops, and restart persistence.
+
+**Direction change:** Built FastAPI + SQLite (WAL) monolith with named Docker volume and required endpoints before optimization work.
+
+**Result:** Stable baseline for subsequent extraction/retrieval iterations.
+

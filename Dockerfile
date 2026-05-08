@@ -6,6 +6,9 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY src ./src
+COPY tests ./tests
+COPY fixtures ./fixtures
+COPY scripts ./scripts
 
 ENV PYTHONUNBUFFERED=1
 ENV MEMORY_DB_PATH=/data/memory.db

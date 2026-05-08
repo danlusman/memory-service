@@ -1,6 +1,14 @@
+# App code lives in the image (COPY from Dockerfile): plain `docker compose up -d`
+# reuses whatever image was last built. After editing sources, either run
+# `docker compose up -d --build` or use `docker compose watch` below.
 services:
   memory-service:
     build: .
+    # Rebuild/recreate container when `./src` changes (run: docker compose watch)
+    develop:
+      watch:
+        - action: rebuild
+          path: ./src
     container_name: memory-service
     ports:
       - "8080:8080"

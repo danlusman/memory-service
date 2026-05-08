@@ -1,0 +1,41 @@
+{
+  "description": "Connects implicit pet (walking X) + city from separate assertions in recall context.",
+  "conversations": [
+    {
+      "session_id": "mh-s1",
+      "user_id": "mh-user",
+      "turns": [
+        {
+          "timestamp": "2025-05-01T10:00:00Z",
+          "messages": [
+            {
+              "role": "user",
+              "content": "I live in Seattle. Walking Biscuit in the mornings is how I decompress before meetings."
+            },
+            { "role": "assistant", "content": "Sounds like Biscuit keeps you grounded." }
+          ]
+        }
+      ]
+    }
+  ],
+  "probes": [
+    {
+      "user_id": "mh-user",
+      "session_id": "mh-s2",
+      "query": "What city does this user live in?",
+      "expects": ["Seattle"]
+    },
+    {
+      "user_id": "mh-user",
+      "session_id": "mh-s2",
+      "query": "What is the user's dog's name?",
+      "expects": ["Biscuit"]
+    },
+    {
+      "user_id": "mh-user",
+      "session_id": "mh-s2",
+      "query": "They have a pet and a home city—which city?",
+      "expects": ["Seattle"]
+    }
+  ]
+}

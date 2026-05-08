@@ -1,0 +1,28 @@
+{
+  "description": "Structured /search after ingestion; session delete clears session-scoped memories.",
+  "conversations": [
+    {
+      "session_id": "cs-session",
+      "user_id": "cs-user",
+      "turns": [
+        {
+          "timestamp": "2025-06-01T12:00:00Z",
+          "messages": [
+            {
+              "role": "user",
+              "content": "I'm allergic to peanuts. I prefer short bullet answers."
+            },
+            { "role": "assistant", "content": "Noted." }
+          ]
+        }
+      ]
+    }
+  ],
+  "search_after_turns": {
+    "query": "allergy peanuts peanut",
+    "session_id": "cs-session",
+    "user_id": "cs-user",
+    "limit": 10,
+    "expect_substrings_in_any_result_content": ["peanut"]
+  }
+}

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib
-import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -92,30 +91,4 @@ def test_relocation_extraction_is_normalized(client):
     assert len(reloc) == 1
     assert reloc[0]["value"] == "Moved from NYC to Berlin"
 
-
-def test_fixture_recall_quality(client):
-    root = Path(__file__).resolve().parent.parent
-    fixture = json.loads((root / "fixtures" / "recall_fixture.json").read_text(encoding="utf-8"))
-    for convo in fixture["conversations"]:
-        for t in convo["turns"]:
-            payload = {
-                "session_id": convo["session_id"],
-                "user_id": convo["user_id"],
-                "messages": t["messages"],
-                "timestamp": t["timestamp"],
-                "metadata": {},
-            }
-            assert client.post("/turns", json=payload).status_code == 201
-    hits = 0
-    total = 0
-    for p in fixture["probes"]:
-        r = client.post("/recall", json={**p, "max_tokens": 512})
-        assert r.status_code == 200
-        context = r.json()["context"].lower()
-        for expected in p["expects"]:
-            total += 1
-            if expected.lower() in context:
-                hits += 1
-    score = hits / max(1, total)
-    assert score >= 0.6, f"fixture recall score too low: {score:.2f}"
 

@@ -29,26 +29,84 @@ class ExtractedMemory:
 
 
 def _extract_pet_name(text: str) -> ExtractedMemory | None:
-    m = re.search(r"\b(?:my|our)\s+(dog|cat)\s+named\s+([A-Z][a-z]+)\b", text)
+    m = re.search(
+        r"\b(?:my|our)\s+(dog|cat)\s+named\s+([A-Z][a-z]+)\b",
+        text,
+        re.IGNORECASE,
+    )
     if m:
-        return ExtractedMemory("fact", "pet", f"Has a {m.group(1)} named {m.group(2)}", 0.82)
-    implicit = re.search(r"\b(?:walking|walked|feeding|fed|taking)\s+([A-Z][a-z]+)\b", text)
+        kin = m.group(1).lower()
+        name = m.group(2)[:1].upper() + m.group(2)[1:].lower() if len(m.group(2)) > 1 else m.group(2).upper()
+        return ExtractedMemory("fact", "pet", f"Has a {kin} named {name}", 0.82)
+    # Verb is case-insensitive; name must look like a proper noun (resists "walking the park").
+    implicit = re.search(
+        r"\b(?i:walking|walked|feeding|fed|taking)\s+([A-Z][a-z]+(?:'[a-z]+)?)\b",
+        text,
+    )
     if implicit:
-        return ExtractedMemory("fact", "pet", f"Has a pet named {implicit.group(1)}", 0.67)
+        name = implicit.group(1)
+        return ExtractedMemory("fact", "pet", f"Has a pet named {name}", 0.67)
+    _not_pet_words = frozenset(
+        {
+            "the",
+            "a",
+            "an",
+            "my",
+            "your",
+            "our",
+            "their",
+            "his",
+            "her",
+            "its",
+            "this",
+            "that",
+            "these",
+            "those",
+        }
+    )
+    implicit_lo = re.search(
+        r"(?i)\b(?:walking|walked|feeding|fed|taking)\s+([a-z][a-z']{2,24})\b",
+        text,
+    )
+    if implicit_lo:
+        raw = implicit_lo.group(1).lower()
+        if raw not in _not_pet_words:
+            name = raw[:1].upper() + raw[1:]
+            return ExtractedMemory("fact", "pet", f"Has a pet named {name}", 0.67)
     return None
+
+
+def _extract_company_phrase(text: str) -> str | None:
+    """Capture a short company name; stop before job clauses (\"as a PM\") and commas."""
+    m = re.search(
+        r"\b(?:i work at|i am at|i'm at)\s+(.+?)(?=\s+as\b|,|$)",
+        text,
+        re.IGNORECASE,
+    )
+    if not m:
+        m = re.search(
+            r"\b(?:i just joined|i started at)\s+(.+?)(?=\s+as\b|\s+also\b|[,.!?]|$)",
+            text,
+            re.IGNORECASE,
+        )
+    if not m:
+        return None
+    company = m.group(1).strip()
+    max_words = 4
+    words = company.split()
+    company = " ".join(words[:max_words]).strip(" .,!?:;")
+    if not company:
+        return None
+    if len(company) > 64:
+        return company[:61].rstrip() + "…"
+    return company
 
 
 def _extract_employment(text: str) -> ExtractedMemory | None:
-    patterns = [
-        r"\b(?:i work at|i am at|i'm at)\s+([A-Z][A-Za-z0-9&.\- ]+)",
-        r"\b(?:i just joined|i started at)\s+([A-Z][A-Za-z0-9&.\- ]+)",
-    ]
-    for p in patterns:
-        m = re.search(p, text, re.IGNORECASE)
-        if m:
-            company = m.group(1).strip(" .,!?:;")
-            return ExtractedMemory("fact", "employment", f"Works at {company}", 0.88)
-    return None
+    company = _extract_company_phrase(text)
+    if not company:
+        return None
+    return ExtractedMemory("fact", "employment", f"Works at {company}", 0.88)
 
 
 def _extract_location(text: str) -> list[ExtractedMemory]:
@@ -76,9 +134,12 @@ def _extract_preference(text: str) -> list[ExtractedMemory]:
     prefer = re.search(r"\bI prefer\s+([^.!?]+)", text, re.IGNORECASE)
     if prefer:
         out.append(ExtractedMemory("preference", "style", prefer.group(1).strip(), 0.75))
-    dietary = re.search(r"\bI(?:'m| am)\s+(vegetarian|vegan)\b", text, re.IGNORECASE)
+    dietary = re.search(r"\bI(?:'m| am)\s+(a\s+)?(vegetarian|vegan)\b", text, re.IGNORECASE)
     if dietary:
-        out.append(ExtractedMemory("preference", "diet", dietary.group(1).lower(), 0.8))
+        label = (dietary.group(2) or "").lower()
+        out.append(
+            ExtractedMemory("preference", "diet", f"Diet preference: {label}", 0.8),
+        )
     allergy = re.search(r"\ballergic to\s+([^.!?]+)", text, re.IGNORECASE)
     if allergy:
         out.append(ExtractedMemory("fact", "allergy", allergy.group(1).strip(), 0.86))

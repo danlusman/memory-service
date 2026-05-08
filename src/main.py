@@ -118,6 +118,13 @@ def _fits(lines: list[str], remaining: int) -> list[str]:
     return lines if len(lines) > 1 else []
 
 
+def _clip_mem_text(value: str, max_chars: int = 200) -> str:
+    v = (value or "").strip()
+    if len(v) <= max_chars:
+        return v
+    return v[: max_chars - 1] + "…"
+
+
 def _assemble_context(stable: list[dict], relevant: list[dict], recent_turns: list[dict], max_tokens: int) -> tuple[str, list[Citation]]:
     parts: list[str] = []
     citations: list[Citation] = []
@@ -125,7 +132,8 @@ def _assemble_context(stable: list[dict], relevant: list[dict], recent_turns: li
     if stable:
         lines = ["## Known facts about this user"]
         for m in stable:
-            lines.append(f"- {m['value']} (updated {m['updated_at'][:10]})")
+            dv = _clip_mem_text(str(m["value"]))
+            lines.append(f"- {dv} (updated {m['updated_at'][:10]})")
         lines = _fits(lines, remaining)
         if lines:
             block = "\n".join(lines)
@@ -135,8 +143,11 @@ def _assemble_context(stable: list[dict], relevant: list[dict], recent_turns: li
     if relevant:
         lines = ["## Query-relevant memories"]
         for r in relevant:
-            lines.append(f"- {r['content']}")
-            citations.append(Citation(turn_id=r["turn_id"], score=round(float(r["score"]), 6), snippet=r["content"][:220]))
+            line = _clip_mem_text(str(r["content"]))
+            lines.append(f"- {line}")
+            citations.append(
+                Citation(turn_id=r["turn_id"], score=round(float(r["score"]), 6), snippet=_clip_mem_text(str(r["content"]), 220)),
+            )
         lines = _fits(lines, remaining)
         if lines:
             block = "\n".join(lines)
@@ -168,23 +179,84 @@ def _dedupe_rows(rows: list[dict], key_fields: tuple[str, ...]) -> list[dict]:
 @app.post("/recall", response_model=RecallOut)
 async def post_recall(payload: RecallIn):
     store: MemoryStore = app.state.store
-    relevant = store.search_memories(payload.query, payload.session_id, payload.user_id, 10)
+    relevant = store.search_memories(payload.query, payload.session_id, payload.user_id, 14)
     relevant = _dedupe_rows(relevant, ("content", "turn_id"))
     query_terms = set(tokenize(payload.query))
-    profile_cues = {"user", "they", "their", "them", "live", "lives", "work", "works", "preference", "prefer", "allergy", "dog", "cat"}
+    profile_cues = {
+        "user",
+        "they",
+        "their",
+        "them",
+        "live",
+        "lives",
+        "work",
+        "works",
+        "preference",
+        "preferences",
+        "prefer",
+        "allergy",
+        "allergies",
+        "dog",
+        "dogs",
+        "cat",
+        "cats",
+        "pet",
+        "pets",
+        "name",
+        "diet",
+        "dietary",
+        "eat",
+        "eating",
+        "food",
+        "meal",
+        "constraint",
+        "constraints",
+        "vegetarian",
+        "vegan",
+        "shellfish",
+        "language",
+        "languages",
+        "programming",
+        "code",
+        "coding",
+        "typescript",
+        "javascript",
+        "python",
+    }
     personal_query = bool(query_terms.intersection(profile_cues))
+
+    def _stable_rank(m: dict) -> tuple[int, str]:
+        t = m["type"]
+        pri = {"fact": 0, "preference": 1, "opinion": 2}.get(str(t), 9)
+        return (pri, str(m.get("updated_at", "")))
+
     if payload.user_id:
         all_user = store.get_user_memories(payload.user_id)
-        stable = [m for m in all_user if int(m["active"]) == 1 and m["type"] in {"fact", "preference"}]
-        # Noise resistance: only include stable facts likely relevant to the query.
+        base_stable = [
+            m for m in all_user if int(m["active"]) == 1 and m["type"] in {"fact", "preference"}
+        ]
+        opinions = [
+            m for m in all_user if int(m["active"]) == 1 and m["type"] == "opinion"
+        ]
         if personal_query:
-            stable = stable[:12]
+            stable = _dedupe_rows(base_stable + opinions, ("key", "value"))
+            stable = sorted(stable, key=_stable_rank)[:16]
         else:
-            stable = [m for m in stable if query_terms.intersection(set(tokenize(m["value"])))][:12]
+            stable = [
+                m for m in base_stable if query_terms.intersection(set(tokenize(str(m["value"]))))
+            ]
+            stable = sorted(_dedupe_rows(stable, ("key", "value")), key=_stable_rank)[:12]
         stable = _dedupe_rows(stable, ("key", "value"))
     else:
         stable = []
-    recent = store.get_recent_turns(payload.session_id, payload.user_id, limit=4) if relevant else []
+    include_recent = False
+    if payload.user_id:
+        include_recent = bool(personal_query or relevant)
+    recent = (
+        store.get_recent_turns(payload.session_id, payload.user_id, limit=4)
+        if include_recent
+        else []
+    )
     if not relevant and not stable:
         return RecallOut(context="", citations=[])
     context, citations = _assemble_context(stable, relevant, recent, max(64, payload.max_tokens))
