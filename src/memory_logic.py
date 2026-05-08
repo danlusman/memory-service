@@ -181,9 +181,23 @@ def _extract_opinion(text: str) -> list[ExtractedMemory]:
 
 def _extract_correction(text: str) -> list[ExtractedMemory]:
     out: list[ExtractedMemory] = []
-    m = re.search(r"\b(?:actually|sorry)[^.!?]*\b(?:not|meant)\s+([^.!?]+)", text, re.IGNORECASE)
-    if m:
-        out.append(ExtractedMemory("event", "correction", text.strip(), 0.68))
+    # Prefer normalized correction facts over storing raw sentence chunks.
+    m_not = re.search(
+        r"\b(?:actually|sorry)[^.!?]*?\bnot\s+([^.!?]+?)(?:\s*[-—]\s*|\s+but\s+|\s+instead\s+)([^.!?]+)",
+        text,
+        re.IGNORECASE,
+    )
+    if m_not:
+        old = m_not.group(1).strip(" .,!?:;")
+        new = m_not.group(2).strip(" .,!?:;")
+        if old and new:
+            out.append(ExtractedMemory("event", "correction", f"Correction: not {old}; meant {new}", 0.72))
+            return out
+    m_meant = re.search(r"\b(?:actually|sorry)[^.!?]*?\bmeant\s+([^.!?]+)", text, re.IGNORECASE)
+    if m_meant:
+        corrected = m_meant.group(1).strip(" .,!?:;")
+        if corrected:
+            out.append(ExtractedMemory("event", "correction", f"Correction: meant {corrected}", 0.68))
     return out
 
 
