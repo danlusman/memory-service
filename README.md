@@ -1,186 +1,141 @@
 # Memory service
 
-A single-container **FastAPI** service that ingests chat turns, extracts **structured memories** with deterministic rules, persists them in **SQLite + FTS5**, and serves **hybrid recall** (full-text + embeddings + lexical overlap) with **mutable-fact supersession** (employment moves, opinion shifts, and similar updates keep history without polluting the active view).
+Single-container memory service (FastAPI) that ingests completed turns, extracts **structured memories** (facts/preferences/opinions/events), persists them in **SQLite + FTS5**, and serves **hybrid recall** with **fact evolution** (supersession) and explicit **token-budgeted** context assembly.
 
-**Default URL:** [http://localhost:8080](http://localhost:8080)
-
----
-
-## Contents
-
-- [Quick start](#quick-start)
-- [Rebuild after code changes](#rebuild-after-code-changes)
-- [HTTP API](#http-api)
-- [Configuration](#configuration)
-- [Architecture](#architecture)
-- [Backing Store Choice](#backing-store-choice)
-- [Behavior](#behavior)
-- [Tradeoffs](#tradeoffs)
-- [Failure modes](#failure-modes)
-- [Running tests & fixtures](#running-tests--fixtures)
-- [Embeddings](#embeddings)
-
----
-
-## Quick start
-
-From the repository root (where `docker-compose.yml` lives):
-
-```bash
-docker compose up -d --build
-until curl -sf http://localhost:8080/health; do sleep 1; done
-```
-
-On a clean machine with no existing image, plain `docker compose up -d` also works (Compose builds once because `build: .` is configured). Use `--build` after local code edits.
-
-**Optional:** when you are editing Python under `src/` frequently, use live rebuilds:
-
-```bash
-docker compose watch
-```
-
-Cold clone (evaluator-style) in one block:
-
-```bash
-git clone <your-repo-url> memory-service
-cd memory-service
-docker compose up -d --build
-until curl -sf http://localhost:8080/health; do sleep 1; done
-```
-
-There is **no supported `pip install` on the host** for this workflow: dependencies install during **`docker build`**; tests and helper scripts are meant to run **`docker compose exec memory-service …`** (see [Running tests & fixtures](#running-tests--fixtures)).
-
----
-
-## Rebuild after code changes
-
-Application code is **`COPY`'d** into the image. Only the **`memory_data`** volume (SQLite under `/data`) is mounted from outside. So:
-
-- **`docker compose up -d`** starts whatever image you **already** built. After you change `src/`, that image is stale until you rebuild.
-- **`docker compose up -d --build`** rebuilds layers that changed, then starts containers. You normally do **not** need `--no-cache`; reserve that for debugging the build cache itself.
-
----
-
-## HTTP API
-
-| Method | Path | Purpose |
-| ------ | ---- | ------- |
-| `GET` | `/health` | Liveness; `503` if the store is unavailable |
-| `POST` | `/turns` | Ingest a turn; extract memories; return `201` with turn id |
-| `POST` | `/recall` | Query-budgeted context string + citations |
-| `POST` | `/search` | Hybrid search over stored memories |
-| `GET` | `/users/{user_id}/memories` | List memories for a user (includes inactive / superseded rows) |
-| `DELETE` | `/sessions/{session_id}` | Remove session-scoped data |
-| `DELETE` | `/users/{user_id}` | Remove user-scoped data |
-
-Malformed JSON returns **400**; validation issues return **422**; oversized bodies return **413**. When `MEMORY_AUTH_TOKEN` is set, other routes expect `Authorization: Bearer <token>`.
-
----
-
-## Configuration
-
-| Variable | Default | Role |
-| -------- | ------- | ---- |
-| `MEMORY_DB_PATH` | `/data/memory.db` | SQLite file path (persisted via Compose volume) |
-| `MEMORY_AUTH_TOKEN` | _(empty)_ | If set, enables bearer auth on non-health routes |
-| `MAX_PAYLOAD_BYTES` | `1048576` | Reject request bodies larger than this |
-| `OPENAI_API_KEY` | _(empty)_ | If set, use OpenAI embeddings; else hash fallback |
-| `OPENAI_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model when API key present |
-| `EMBEDDING_DIM` | `128` | Dimension for hash-based embedding vectors |
+Base URL: `http://localhost:8080`
 
 ---
 
 ## Architecture
 
-Ingestion is **synchronous**: the service does not return **`201`** from `/turns` until the turn is stored, memories extracted, mutable keys reconciled, embeddings computed, and FTS rows updated. That makes **`GET /users/.../memories`** and **`POST /recall`** immediately consistent with the last accepted turn.
+`POST /turns` is synchronous: it persists the turn, runs extraction, applies fact evolution, updates FTS/embeddings, and only then returns `201`. After that, `/recall` and `/users/{user_id}/memories` reflect the turn immediately.
 
 ```mermaid
 flowchart LR
-  U["Client / Eval harness"] --> API["FastAPI service :8080"]
+  U["Client / Eval harness"] --> API["FastAPI :8080"]
 
-  subgraph ING["Ingestion path"]
-    API --> T["POST /turns"]
-    T --> W["Persist raw turn"]
-    W --> X["Rule extraction"]
-    X --> P["Fact evolution (active / supersedes)"]
-    P --> M[("memories")]
-    P --> F[("memories_fts")]
-    P --> E["Embedding vector per memory"]
+  subgraph ING["Ingest (POST /turns)"]
+    API --> T["Persist raw turn"]
+    T --> X["Extract structured memories"]
+    X --> EVO["Evolve mutable keys (active/supersedes)"]
+    EVO --> MEM[("memories")]
+    EVO --> FTS[("memories_fts (FTS5)")]
+    EVO --> VEC["Store embedding vector"]
   end
 
-  subgraph RET["Recall & search path"]
-    API --> R["POST /recall"]
-    API --> S["POST /search"]
+  subgraph RET["Read (POST /recall, POST /search)"]
+    API --> R["/recall"]
+    API --> S["/search"]
     R --> H["Hybrid retrieval"]
     S --> H
-    H --> F
-    H --> M
-    H --> B["Budgeted context assembly"]
-    B --> O["Priority: stable facts -> query-relevant -> recent turns"]
-    O --> C["context + citations"]
+    H --> FTS
+    H --> MEM
+    H --> ASM["Budgeted context assembly"]
+    ASM --> OUT["context + citations"]
   end
 
-  subgraph STO["Storage"]
-    D[("SQLite /data/memory.db")]
-    V["Docker volume: memory_data"]
+  subgraph STO["Persistence"]
+    DB[("SQLite file: /data/memory.db")]
+    VOL["Docker volume: memory_data"]
   end
 
-  M --> D
-  F --> D
-  W --> D
-  D --> V
+  MEM --> DB
+  FTS --> DB
+  DB --> VOL
 ```
 
-Persistent state lives in a **named volume** (`memory_data` → `/data`), so `docker compose down` does not erase the database unless you remove the volume deliberately.
+---
+
+## Backing store
+
+**SQLite + FTS5**, persisted on a named Docker volume. WAL mode is enabled to improve read/write concurrency.
+
+Rationale:
+- single container, no external dependencies
+- ACID semantics align with strict read-after-write requirements
+- FTS5 provides a strong keyword signal for “name/where/work” queries
+- easy inspection via `/users/{user_id}/memories`
 
 ---
 
-## Backing Store Choice
+## API surface
 
-This service uses **SQLite + FTS5** and stores one embedding vector per memory row.
+Contract endpoints:
+- `GET /health`
+- `POST /turns`
+- `POST /recall`
+- `POST /search`
+- `GET /users/{user_id}/memories`
+- `DELETE /sessions/{session_id}`
+- `DELETE /users/{user_id}`
 
-Why this choice:
-- **Single-container deployability:** no external DB service needed for evaluator setup.
-- **Strong sync semantics:** local ACID transactions align well with “`/turns` returns only after data is queryable.”
-- **Good retrieval primitives:** FTS5 handles exact-token relevance; vectors and lexical overlap improve semantic/generalization behavior.
-- **Operational simplicity:** persistence is a named Docker volume, easy to inspect and reset.
-
----
-
-## Behavior
-
-**Extraction** (user messages only, rule/regex): employment and moves, pets (explicit and lightly implicit phrasing), allergies, diet/style preferences, relationships, topic-scoped opinions, and short correction-shaped utterances. See [CHANGELOG.md](CHANGELOG.md) for design tradeoffs (especially implicit pets and noise rejection).
-
-**Recall** blends **BM25-style FTS**, **cosine similarity on stored vectors**, and **token overlap**, then assembles **budgeted** prose: stable profile facts, query-relevant hits, and a small slice of recent turns. If nothing relevant clears the internal gate, **`context` is empty** (HTTP 200)—by design for unrelated queries.
-
-**Mutable facts** (jobs, location, pet, many opinions, etc.) use **supersession**: a new conflicting value **deactivates** the previous row and stores a pointer via **`supersedes`**, so histories stay inspectable while recall prefers active rows.
-
-**Session scoping:** the same **`user_id`** may see memories across **`session_id`** values; when **`user_id`** is omitted from a recall payload, behavior follows the contract for session-only recall.
+Optional auth: set `MEMORY_AUTH_TOKEN` and send `Authorization: Bearer <token>` (health remains unauthenticated).
 
 ---
 
-## Tradeoffs
+## Extraction pipeline
 
-- **Optimized for evaluator correctness over maximal model sophistication:** deterministic extraction is debuggable and stable, but misses nuanced paraphrases that an LLM extractor could capture.
-- **SQLite simplicity vs scale ceiling:** excellent local reliability, but not an ANN-scale architecture for very large corpora.
-- **Synchronous `/turns` correctness vs write latency:** immediate read-after-write is guaranteed, with higher per-turn latency than async pipelines.
-- **Hybrid recall tuned for precision + signal coverage:** FTS/cosine/lexical fusion improves quality, but adds more ranking knobs to calibrate.
+This service stores raw turns, but recall operates on **extracted structured memories**. Current extractor is deterministic (rules/regex) and produces typed rows with keys and confidence scores:
 
----
+- **facts**: employment, location (+ relocation event), pets (explicit and lightly implicit phrasing), allergies, relationships/family
+- **preferences**: diet, response style (`I prefer ...`)
+- **opinions**: topic-scoped stances (supports opinion evolution)
+- **events**: correction-shaped utterances (normalized to avoid raw sentence blobs where possible)
 
-## Failure modes
-
-- **Cold session / no relevant memory:** `/recall` returns `{"context": "", "citations": []}` with HTTP 200.
-- **Malformed JSON / schema errors:** 400 for malformed JSON, 422 for validation errors.
-- **Oversized payload:** request rejected with 413 (`MAX_PAYLOAD_BYTES`).
-- **Missing embedding API key:** service falls back to deterministic local embeddings and remains functional.
-- **Store problems (e.g. DB corruption/unavailable):** `/health` reports non-ready via 503 path.
+The reviewer-visible artifact is `/users/{user_id}/memories`: it returns the structured memory table with provenance (`source_session`, `source_turn`) and evolution fields (`active`, `supersedes`).
 
 ---
 
-## Running tests & fixtures
+## Recall strategy
 
-**Pytest (canonical, in container):**
+`POST /recall` does:
+
+1. **Hybrid retrieval** over active memories (FTS5 + cosine similarity + lexical overlap).
+2. **Relevance gating**: if no stable/profile or query-relevant memories pass the gate, return `{"context":"","citations":[]}`.
+3. **Budgeted assembly** under `max_tokens` (approximate):
+   - stable user facts/preferences first,
+   - then query-relevant memories + citations,
+   - then a small slice of recent turns for grounding.
+
+This is intentionally not “vanilla cosine top‑k”: keyword and lexical signals remain first-class.
+
+---
+
+## Fact evolution
+
+Certain memory keys are treated as mutable (employment/location/pets/preferences/opinions). On contradiction:
+- previous active row is deactivated
+- new row becomes active
+- new row references prior row via `supersedes`
+
+This keeps recall aligned to current truth while preserving history for inspection.
+
+---
+
+## Operational notes
+
+Persistence is via a named volume (`memory_data`) mounted at `/data`; data survives `docker compose down` unless the volume is removed explicitly.
+
+Source code is baked into the image (`COPY src`). On a clean clone, `docker compose up -d` builds automatically. After local edits, run:
+
+```bash
+docker compose up -d --build
+```
+
+---
+
+## Configuration
+
+See `.env.example` for all optional knobs. Common ones:
+- `MEMORY_AUTH_TOKEN` (optional auth)
+- `MAX_PAYLOAD_BYTES` (request limit; returns 413 if exceeded)
+- `OPENAI_API_KEY` / `OPENAI_EMBEDDING_MODEL` (optional better embeddings)
+
+---
+
+## Tests and self-eval fixtures
+
+Run tests in the container (no host `pip install` required):
 
 ```bash
 docker compose up -d --build
@@ -188,57 +143,24 @@ until curl -sf http://localhost:8080/health; do sleep 1; done
 docker compose exec memory-service python -m pytest -q tests/
 ```
 
-**Full smoke (build, health, HTTP samples, pytest):**
+Fixtures (end-to-end ingestion + recall scoring):
+
+```bash
+docker compose exec memory-service python3 /app/scripts/run_recall_fixture.py --base http://127.0.0.1:8080 --fixture fixtures/recall_fixture.json
+docker compose exec memory-service python3 /app/scripts/run_recall_fixture.py --base http://127.0.0.1:8080 --fixture fixtures/multi_hop_fixture.json --min-score 0.66
+```
+
+Smoke path (build + probe + pytest):
 
 ```bash
 chmod +x scripts/verify.sh
 ./scripts/verify.sh
 ```
 
-**Recall fixtures** (stdlib HTTP client; run inside the container so `/app` paths resolve):
-
-```bash
-docker compose exec memory-service \
-  python3 /app/scripts/run_recall_fixture.py \
-  --base http://127.0.0.1:8080 \
-  --fixture fixtures/recall_fixture.json
-```
-
-Multi-hop script (stricter internal threshold):
-
-```bash
-docker compose exec memory-service \
-  python3 /app/scripts/run_recall_fixture.py \
-  --base http://127.0.0.1:8080 \
-  --fixture fixtures/multi_hop_fixture.json \
-  --min-score 0.66
-```
-
-With optional auth:
-
-```bash
-docker compose exec memory-service \
-  python3 /app/scripts/run_recall_fixture.py \
-  --base http://127.0.0.1:8080 \
-  --token "${MEMORY_AUTH_TOKEN}"
-```
-
-| Fixture | Role |
-| ------- | ---- |
-| `fixtures/recall_fixture.json` | Primary scripted conversation and recall probes |
-| `fixtures/multi_hop_fixture.json` | Relocation + implicit pet resurfacing in recall |
-| `fixtures/cleanup_search_fixture.json` | `/search` plus session delete (used by pytest) |
-
-`tests/test_fixtures_extended.py` loads these JSON files end-to-end; **`run_recall_fixture.py`** accepts **`--fixture PATH`** for ad-hoc runs.
-
 ---
 
-## Embeddings
+## Tradeoffs and failure modes
 
-By default the service uses **deterministic hash embeddings** (no network, no API key). If **`OPENAI_API_KEY`** is set, it optionally calls the OpenAI embeddings API and **still** fuses with FTS and lexical signals—retrieval never degrades to embedding-only **`top-k`** ranking.
-
----
-
-## Design history
-
-For substantive iterations (what was tried, what failed in practice, what changed), see **[CHANGELOG.md](CHANGELOG.md)**.
+- Deterministic extraction is debuggable and stable, but misses nuanced paraphrases an LLM extractor could catch.
+- When no memory is relevant, `/recall` returns empty context (HTTP 200) by design.
+- If `OPENAI_API_KEY` is not set, embeddings fall back to deterministic local hashing; the service remains functional.
