@@ -1,0 +1,17 @@
+services:
+  memory-service:
+    build: .
+    container_name: memory-service
+    ports:
+      - "8080:8080"
+    environment:
+      MEMORY_DB_PATH: /data/memory.db
+      MEMORY_AUTH_TOKEN: ${MEMORY_AUTH_TOKEN:-}
+      MAX_PAYLOAD_BYTES: ${MAX_PAYLOAD_BYTES:-1048576}
+    volumes:
+      - memory_data:/data
+    restart: unless-stopped
+
+volumes:
+  memory_data:
+    name: memory_data

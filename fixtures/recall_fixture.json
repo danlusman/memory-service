@@ -1,0 +1,64 @@
+{
+  "conversations": [
+    {
+      "session_id": "fx-s1",
+      "user_id": "user-a",
+      "turns": [
+        {
+          "timestamp": "2025-03-01T10:00:00Z",
+          "messages": [
+            { "role": "user", "content": "I work at Stripe as an engineer. My dog named Biscuit wakes me up at 6." },
+            { "role": "assistant", "content": "Nice! Biscuit sounds energetic." }
+          ]
+        },
+        {
+          "timestamp": "2025-03-20T10:00:00Z",
+          "messages": [
+            { "role": "user", "content": "I just joined Notion as a PM. Also I moved to Berlin from NYC last month." },
+            { "role": "assistant", "content": "Big month. Congrats on both changes." }
+          ]
+        }
+      ]
+    },
+    {
+      "session_id": "fx-s2",
+      "user_id": "user-b",
+      "turns": [
+        {
+          "timestamp": "2025-04-01T09:00:00Z",
+          "messages": [
+            { "role": "user", "content": "I am vegetarian and allergic to shellfish. I prefer concise answers." },
+            { "role": "assistant", "content": "Got it, concise and shellfish-safe." }
+          ]
+        }
+      ]
+    },
+    {
+      "session_id": "fx-s3",
+      "user_id": "user-c",
+      "turns": [
+        {
+          "timestamp": "2025-04-02T09:00:00Z",
+          "messages": [
+            { "role": "user", "content": "I love TypeScript." },
+            { "role": "assistant", "content": "TypeScript can be great for scale." }
+          ]
+        },
+        {
+          "timestamp": "2025-04-22T09:00:00Z",
+          "messages": [
+            { "role": "user", "content": "TypeScript is fine for big projects but I'd use Python for scripts." },
+            { "role": "assistant", "content": "Balanced view." }
+          ]
+        }
+      ]
+    }
+  ],
+  "probes": [
+    { "user_id": "user-a", "session_id": "fx-s4", "query": "Where does this user live now?", "expects": ["Lives in Berlin"] },
+    { "user_id": "user-a", "session_id": "fx-s4", "query": "Where does this user work?", "expects": ["Works at Notion"] },
+    { "user_id": "user-a", "session_id": "fx-s4", "query": "What's their dog's name?", "expects": ["Biscuit"] },
+    { "user_id": "user-b", "session_id": "fx-s4", "query": "Any dietary constraints?", "expects": ["vegetarian", "shellfish"] },
+    { "user_id": "user-c", "session_id": "fx-s4", "query": "Programming language preferences?", "expects": ["Python for scripts", "TypeScript"] }
+  ]
+}
