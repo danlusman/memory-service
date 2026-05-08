@@ -1,16 +1,5 @@
 #!/usr/bin/env python3
-"""
-Run a recall JSON fixture against a live memory service (stdlib only; no pip required).
 
-Defaults to fixtures/recall_fixture.json.
-
-Usage:
-  python3 scripts/run_recall_fixture.py --base http://localhost:8080
-  python3 scripts/run_recall_fixture.py --base http://localhost:8080 --fixture fixtures/multi_hop_fixture.json
-
-Optional auth:
-  python3 scripts/run_recall_fixture.py --base http://localhost:8080 --token YOUR_TOKEN
-"""
 from __future__ import annotations
 
 import argparse
